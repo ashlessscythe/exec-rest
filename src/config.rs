@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
+use toml::Value as TomlValue;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -80,9 +81,32 @@ impl Config {
         let path_ref = path.as_ref();
         let content = std::fs::read_to_string(&path)
             .with_context(|| format!("Failed to read config file: {}", path_ref.display()))?;
-
-        let config: Config =
+        // Parse to TOML value to normalize legacy/misplaced fields before strict deserialization
+        let mut root: TomlValue =
             toml::from_str(&content).with_context(|| "Failed to parse TOML configuration")?;
+
+        // If [loop] exists, map it to loop_config
+        if let Some(loop_table) = root.get("loop").cloned() {
+            root.as_table_mut()
+                .unwrap()
+                .insert("loop_config".to_string(), loop_table);
+            root.as_table_mut().unwrap().remove("loop");
+        }
+
+        // If [extraction].loop_config exists (misplaced), move it to root.loop_config
+        if let Some(extraction) = root.get_mut("extraction") {
+            if let Some(extraction_table) = extraction.as_table_mut() {
+                if let Some(misplaced_loop) = extraction_table.remove("loop_config") {
+                    root.as_table_mut()
+                        .unwrap()
+                        .insert("loop_config".to_string(), misplaced_loop);
+                }
+            }
+        }
+
+        let config: Config = root
+            .try_into()
+            .with_context(|| "Failed to map configuration to structs")?;
 
         Ok(config)
     }

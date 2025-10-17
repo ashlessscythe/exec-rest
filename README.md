@@ -67,6 +67,15 @@ sap_auto_runner.exe --endpoint https://api.example.com/upload --mode json_base64
 sap_auto_runner.exe --loop-interval 0
 ```
 
+When launched without CLI overrides, a small interactive menu appears:
+
+- Run once (no loop)
+- Run loop (use configured interval)
+- Open config in Notepad
+- Exit
+
+The tool accepts both `[loop]` and `loop_config` in `config.toml`. If you had a previous config using `[loop]`, it will be read automatically.
+
 ## File Format Support
 
 The tool expects TSV files with header rows like:

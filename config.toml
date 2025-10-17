@@ -1,12 +1,12 @@
 [extraction]
-executable = "C:\\tools\\sap_auto.exe"
-subcommand = "run-sequence"              # or "run-loop" (runner warns if both loop)
-args = ["--plant", "001", "--cols", "plant,material,delivery"]
+executable = "c:\\temp\\149_auto\\extractor\\sap_automation.exe"
+subcommand = "run-loop"                   # or "run-sequence" (runner warns if both loop)
+args = []                                 # no additional args needed for your program
 env = {}                                  # optional env for child process
 
 [files]
-output_dir = "C:\\data\\outputs"
-file_glob = "*_y_001-ALL.txt"             # defaults to "*.txt" if empty
+output_dir = "c:\\temp\\149_auto\\outputs"
+file_glob = "*_y_149-ALL.txt"             # defaults to "*.txt" if empty
 filename_timestamp_prefix = true          # if true, can parse timestamp from filename
 stable_size_check_secs = 2                # size must be stable for this many seconds
 
@@ -38,7 +38,7 @@ initial_backoff_secs = 3                  # exponential, cap 30s
 
 [loop]
 interval_seconds = 300                    # 0 = run once; >0 = loop forever
-allow_nested = false                      # guard if subcommand also loops
+allow_nested = true                       # allow nested loops since subcommand is run-loop
 
 [archive]
 enabled = false

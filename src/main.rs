@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use dialoguer::{theme::ColorfulTheme, Select};
 use log::{error, info, warn};
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -61,6 +62,49 @@ async fn main() -> Result<()> {
 
     // Load configuration
     let mut config = Config::load(&cli.config)?;
+
+    // Show landing menu if no CLI overrides are provided
+    let no_overrides = cli.endpoint.is_none()
+        && cli.mode.is_none()
+        && cli.output_dir.is_none()
+        && cli.file_glob.is_none()
+        && cli.loop_interval.is_none();
+
+    if no_overrides {
+        let items = vec![
+            "Run once (no loop)",
+            "Run loop (use configured interval)",
+            "Open config in Notepad",
+            "Exit",
+        ];
+        let selection = Select::with_theme(&ColorfulTheme::default())
+            .with_prompt("What would you like to do?")
+            .items(&items)
+            .default(0)
+            .interact()
+            .unwrap_or(3);
+
+        match selection {
+            0 => {
+                // Force single run
+                config.loop_config.interval_seconds = 0;
+            }
+            1 => {
+                // Keep configured loop interval (ensure >0)
+                if config.loop_config.interval_seconds == 0 {
+                    config.loop_config.interval_seconds = 300;
+                }
+            }
+            2 => {
+                // Open config in Notepad then exit
+                let _ = std::process::Command::new("notepad")
+                    .arg(&cli.config)
+                    .status();
+                return Ok(());
+            }
+            _ => return Ok(()),
+        }
+    }
 
     // Apply CLI overrides
     if let Some(endpoint) = cli.endpoint {
@@ -129,10 +173,14 @@ async fn run_once(
         config.extraction.executable, config.extraction.subcommand
     );
 
+    let exe_path = std::path::Path::new(&config.extraction.executable);
+    let exe_dir = exe_path.parent().unwrap_or(std::path::Path::new("."));
+
     let mut child = Command::new(&config.extraction.executable)
         .arg(&config.extraction.subcommand)
         .args(&config.extraction.args)
         .envs(&config.extraction.env)
+        .current_dir(exe_dir)
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .spawn()?;
