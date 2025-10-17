@@ -1,0 +1,46 @@
+[extraction]
+executable = "C:\\tools\\sap_auto.exe"
+subcommand = "run-sequence"              # or "run-loop" (runner warns if both loop)
+args = ["--plant", "001", "--cols", "plant,material,delivery"]
+env = {}                                  # optional env for child process
+
+[files]
+output_dir = "C:\\data\\outputs"
+file_glob = "*_y_001-ALL.txt"             # defaults to "*.txt" if empty
+filename_timestamp_prefix = true          # if true, can parse timestamp from filename
+stable_size_check_secs = 2                # size must be stable for this many seconds
+
+# Optional pre-upload normalization of TSV:
+[transform]
+enabled = false                           # if true, write a cleaned temp file to upload
+format = "tsv"                            # "tsv" or "csv"
+header_rows_to_skip = 6                   # skip non-data lines before the header row
+header_match = "Plant\tDelivery\tMaterial" # sanity check (case-insensitive contains)
+dedupe_rows = false                       # if true, drop duplicate data rows
+trim_whitespace = true                    # trim cells
+output_line_ending = "crlf"               # "crlf" or "lf"
+
+[api]
+endpoint = "https://api.example.com/upload.php"
+mode = "multipart"                        # "multipart" or "json_base64"
+field_name = "file"                       # for multipart
+extra_fields = {}                         # sent as additional form fields
+json_filename_key = "filename"            # for json_base64
+json_data_key = "data"
+auth = "none"                             # "none" | "bearer" | "basic"
+bearer_token = ""
+basic_username = ""
+basic_password = ""
+
+[retry]
+max_attempts = 3
+initial_backoff_secs = 3                  # exponential, cap 30s
+
+[loop]
+interval_seconds = 300                    # 0 = run once; >0 = loop forever
+allow_nested = false                      # guard if subcommand also loops
+
+[archive]
+enabled = false
+path = "C:\\data\\archive"
+append_timestamp = true                   # append YYYYMMDD_HHMMSS to archived name
