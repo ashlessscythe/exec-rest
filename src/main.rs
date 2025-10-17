@@ -9,11 +9,13 @@ use tokio::time::{sleep, Duration};
 
 mod config;
 mod file_utils;
+mod lookup;
 mod transform;
 mod upload;
 
 use config::Config;
 use file_utils::FileWatcher;
+use lookup::LookupEnricher;
 use transform::Transformer;
 use upload::Uploader;
 
@@ -70,10 +72,12 @@ async fn main() -> Result<()> {
         && cli.file_glob.is_none()
         && cli.loop_interval.is_none();
 
+    let mut menu_selection = None;
     if no_overrides {
         let items = vec![
             "Run once (no loop)",
             "Run loop (use configured interval)",
+            "Enrich latest file only (no extraction)",
             "Open config in Notepad",
             "Exit",
         ];
@@ -96,6 +100,10 @@ async fn main() -> Result<()> {
                 }
             }
             2 => {
+                // Enrich latest file only (no extraction) - handle after component creation
+                menu_selection = Some(2);
+            }
+            3 => {
                 // Open config in Notepad then exit
                 let _ = std::process::Command::new("notepad")
                     .arg(&cli.config)
@@ -138,15 +146,47 @@ async fn main() -> Result<()> {
     let file_watcher = FileWatcher::new(&config.files)?.with_archive(&config.archive);
     let transformer = Transformer::new(&config.transform)?;
     let uploader = Uploader::new(&config.api, &config.retry)?;
+    let lookup_enricher = if config.lookup.enabled {
+        Some(LookupEnricher::new(&config.lookup)?)
+    } else {
+        None
+    };
+
+    // Handle special menu selections
+    if let Some(selection) = menu_selection {
+        match selection {
+            2 => {
+                // Enrich latest file only (no extraction)
+                return enrich_latest_file_only(&config, &file_watcher, lookup_enricher.as_ref())
+                    .await;
+            }
+            _ => {}
+        }
+    }
 
     // Main execution loop
     if config.loop_config.interval_seconds == 0 {
         // Run once
-        run_once(&config, &file_watcher, &transformer, &uploader).await?;
+        run_once(
+            &config,
+            &file_watcher,
+            &transformer,
+            &uploader,
+            lookup_enricher.as_ref(),
+        )
+        .await?;
     } else {
         // Run in loop
         loop {
-            if let Err(e) = run_once(&config, &file_watcher, &transformer, &uploader).await {
+            if let Err(e) = run_once(
+                &config,
+                &file_watcher,
+                &transformer,
+                &uploader,
+                lookup_enricher.as_ref(),
+            )
+            .await
+            {
                 error!("Error in run cycle: {}", e);
             }
 
@@ -166,6 +206,7 @@ async fn run_once(
     file_watcher: &FileWatcher,
     transformer: &Transformer,
     uploader: &Uploader,
+    lookup_enricher: Option<&LookupEnricher>,
 ) -> Result<()> {
     // Spawn SAP auto process
     info!(
@@ -215,24 +256,48 @@ async fn run_once(
     file_watcher.wait_for_stable_file(&newest_file).await?;
     info!("File is stable: {}", newest_file.display());
 
-    // Transform file if enabled
-    let (upload_file, is_transformed) = if config.transform.enabled {
-        info!("Transforming file before upload");
-        let temp_file = transformer.transform_file(&newest_file).await?;
-        (temp_file.path().to_path_buf(), true)
+    // Handle lookup enrichment or regular upload
+    if config.lookup.enabled && config.api.mode == "lookup_enrich" {
+        // Use lookup enrichment flow
+        if let Some(enricher) = lookup_enricher {
+            info!("Using lookup enrichment flow");
+            let enriched_rows = enricher.enrich_tsv_file(&newest_file).await?;
+            enricher.post_enriched_data(&enriched_rows).await?;
+            info!("Lookup enrichment and upload completed successfully");
+        } else {
+            anyhow::bail!("Lookup enrichment is enabled but enricher is not available");
+        }
     } else {
-        (newest_file.clone(), false)
-    };
+        // Use regular transform + upload flow
+        let (upload_file, is_transformed) = if config.transform.enabled {
+            info!("Transforming file before upload");
+            let temp_file = transformer.transform_file(&newest_file).await?;
+            (temp_file.path().to_path_buf(), true)
+        } else {
+            (newest_file.clone(), false)
+        };
 
-    // Upload file
-    info!("Uploading file: {}", upload_file.display());
-    uploader
-        .upload_file(
-            &upload_file,
-            &newest_file.file_name().unwrap().to_string_lossy(),
-        )
-        .await?;
-    info!("File uploaded successfully");
+        // Upload file
+        info!("Uploading file: {}", upload_file.display());
+        uploader
+            .upload_file(
+                &upload_file,
+                &newest_file.file_name().unwrap().to_string_lossy(),
+            )
+            .await?;
+        info!("File uploaded successfully");
+
+        // Clean up transformed file if it was created
+        if is_transformed {
+            if let Err(e) = tokio::fs::remove_file(&upload_file).await {
+                warn!(
+                    "Failed to clean up transformed file {}: {}",
+                    upload_file.display(),
+                    e
+                );
+            }
+        }
+    }
 
     // Archive file if enabled
     if config.archive.enabled {
@@ -241,15 +306,100 @@ async fn run_once(
         info!("File archived");
     }
 
-    // Clean up transformed file if it was created
-    if is_transformed {
-        if let Err(e) = tokio::fs::remove_file(&upload_file).await {
-            warn!(
-                "Failed to clean up transformed file {}: {}",
-                upload_file.display(),
-                e
+    Ok(())
+}
+
+async fn enrich_latest_file_only(
+    config: &Config,
+    file_watcher: &FileWatcher,
+    lookup_enricher: Option<&LookupEnricher>,
+) -> Result<()> {
+    info!("Enriching latest file only (no extraction)");
+
+    // Check if output directory exists
+    let output_dir = std::path::Path::new(&config.files.output_dir);
+    if !output_dir.exists() {
+        anyhow::bail!(
+            "Output directory does not exist: {}\nPlease check your configuration or run the extraction first.",
+            output_dir.display()
+        );
+    }
+
+    if !output_dir.is_dir() {
+        anyhow::bail!(
+            "Output path is not a directory: {}\nPlease check your configuration.",
+            output_dir.display()
+        );
+    }
+
+    // Find newest file
+    let newest_file = match file_watcher.find_newest_file().await? {
+        Some(file) => {
+            info!("Found newest file: {}", file.display());
+            file
+        }
+        None => {
+            anyhow::bail!(
+                "No matching files found in output directory: {}\nPattern: {}\n\nThis could mean:\n- No files match the pattern '{}'\n- The extraction hasn't been run yet\n- Files are in a different location\n\nTry running the full extraction first, or check your file_glob pattern.",
+                config.files.output_dir,
+                config.files.file_glob,
+                config.files.file_glob
             );
         }
+    };
+
+    // Verify the file still exists and is readable
+    if !newest_file.exists() {
+        anyhow::bail!(
+            "File no longer exists: {}\nThe file may have been moved or deleted.",
+            newest_file.display()
+        );
+    }
+
+    if !newest_file.is_file() {
+        anyhow::bail!(
+            "Path is not a file: {}\nExpected a file but found something else.",
+            newest_file.display()
+        );
+    }
+
+    // Wait for file to be stable
+    file_watcher.wait_for_stable_file(&newest_file).await?;
+    info!("File is stable: {}", newest_file.display());
+
+    // Check if lookup enrichment is enabled
+    if !config.lookup.enabled {
+        anyhow::bail!(
+            "Lookup enrichment is not enabled in configuration.\nPlease set 'lookup.enabled = true' in your config file."
+        );
+    }
+
+    if config.api.mode != "lookup_enrich" {
+        anyhow::bail!(
+            "API mode must be 'lookup_enrich' for this operation.\nCurrent mode: '{}'\nPlease set 'api.mode = \"lookup_enrich\"' in your config file.",
+            config.api.mode
+        );
+    }
+
+    if let Some(enricher) = lookup_enricher {
+        info!(
+            "Starting lookup enrichment for file: {}",
+            newest_file.display()
+        );
+        let enriched_rows = enricher.enrich_tsv_file(&newest_file).await?;
+        enricher.post_enriched_data(&enriched_rows).await?;
+        info!("Lookup enrichment and upload completed successfully");
+    } else {
+        anyhow::bail!(
+            "Lookup enrichment is enabled but enricher is not available.\nThis is an internal error - please check your configuration."
+        );
+    }
+
+    // Archive file if enabled
+    if config.archive.enabled {
+        info!("Archiving file");
+        file_watcher.archive_file(&newest_file).await?;
+        info!("File archived");
     }
 
     Ok(())

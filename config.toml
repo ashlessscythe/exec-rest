@@ -5,7 +5,7 @@ args = []                                 # no additional args needed for your p
 env = {}                                  # optional env for child process
 
 [files]
-output_dir = "c:\\temp\\149_auto\\outputs"
+output_dir = "c:\\temp\\reports\\y_149"
 file_glob = "*_y_149-ALL.txt"             # defaults to "*.txt" if empty
 filename_timestamp_prefix = true          # if true, can parse timestamp from filename
 stable_size_check_secs = 2                # size must be stable for this many seconds
@@ -22,7 +22,7 @@ output_line_ending = "crlf"               # "crlf" or "lf"
 
 [api]
 endpoint = "https://api.example.com/upload.php"
-mode = "multipart"                        # "multipart" or "json_base64"
+mode = "lookup_enrich"                    # "multipart", "json_base64", or "lookup_enrich"
 field_name = "file"                       # for multipart
 extra_fields = {}                         # sent as additional form fields
 json_filename_key = "filename"            # for json_base64
@@ -44,3 +44,12 @@ allow_nested = true                       # allow nested loops since subcommand 
 enabled = false
 path = "C:\\data\\archive"
 append_timestamp = true                   # append YYYYMMDD_HHMMSS to archived name
+
+# Optional lookup enrichment before upload
+[lookup]
+enabled = true                            # if true, enrich TSV data with lookup API
+url = "http://api.example.com:5050/endpoint.php?ajax=lookup&part="
+chunk_size = 200                          # max parts per lookup request
+cookie = ""                               # optional session cookie
+timeout_secs = 30                         # request timeout
+post_url = "http://api.example.com:8080/blah/yadda.php"  # where to POST enriched data

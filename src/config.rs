@@ -13,6 +13,7 @@ pub struct Config {
     pub retry: RetryConfig,
     pub loop_config: LoopConfig,
     pub archive: ArchiveConfig,
+    pub lookup: LookupConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -74,6 +75,16 @@ pub struct ArchiveConfig {
     pub enabled: bool,
     pub path: String,
     pub append_timestamp: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LookupConfig {
+    pub enabled: bool,
+    pub url: String,
+    pub chunk_size: usize,
+    pub cookie: String,
+    pub timeout_secs: u64,
+    pub post_url: String,
 }
 
 impl Config {
@@ -140,11 +151,24 @@ impl Config {
         if self.api.endpoint.is_empty() {
             anyhow::bail!("api.endpoint cannot be empty");
         }
-        if !["multipart", "json_base64"].contains(&self.api.mode.as_str()) {
-            anyhow::bail!("api.mode must be 'multipart' or 'json_base64'");
+        if !["multipart", "json_base64", "lookup_enrich"].contains(&self.api.mode.as_str()) {
+            anyhow::bail!("api.mode must be 'multipart', 'json_base64', or 'lookup_enrich'");
         }
         if !["none", "bearer", "basic"].contains(&self.api.auth.as_str()) {
             anyhow::bail!("api.auth must be 'none', 'bearer', or 'basic'");
+        }
+
+        // Validate lookup config
+        if self.lookup.enabled {
+            if self.lookup.url.is_empty() {
+                anyhow::bail!("lookup.url cannot be empty when lookup is enabled");
+            }
+            if self.lookup.post_url.is_empty() {
+                anyhow::bail!("lookup.post_url cannot be empty when lookup is enabled");
+            }
+            if self.lookup.chunk_size == 0 {
+                anyhow::bail!("lookup.chunk_size must be greater than 0");
+            }
         }
 
         // Validate retry config
@@ -209,6 +233,14 @@ impl Default for Config {
                 enabled: false,
                 path: "C:\\sap\\archive".to_string(),
                 append_timestamp: true,
+            },
+            lookup: LookupConfig {
+                enabled: false,
+                url: "http://api.example.com:5050/endpoint.php?ajax=lookup&part=".to_string(),
+                chunk_size: 200,
+                cookie: String::new(),
+                timeout_secs: 30,
+                post_url: "http://api.example.com:8080/blah/yadda.php".to_string(),
             },
         }
     }

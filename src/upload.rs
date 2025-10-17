@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use base64::{Engine as _, engine::general_purpose};
+use base64::{engine::general_purpose, Engine as _};
 use log::{debug, error, info, warn};
 use reqwest::{Client, StatusCode};
 use serde_json::json;
@@ -17,8 +17,7 @@ pub struct Uploader {
 
 impl Uploader {
     pub fn new(api_config: &ApiConfig, retry_config: &RetryConfig) -> Result<Self> {
-        let client_builder = Client::builder()
-            .timeout(Duration::from_secs(30));
+        let client_builder = Client::builder().timeout(Duration::from_secs(30));
 
         // Configure authentication
         match api_config.auth.as_str() {
@@ -42,7 +41,8 @@ impl Uploader {
             }
         }
 
-        let client = client_builder.build()
+        let client = client_builder
+            .build()
             .context("Failed to create HTTP client")?;
 
         Ok(Self {
@@ -58,7 +58,10 @@ impl Uploader {
 
         loop {
             attempt += 1;
-            debug!("Upload attempt {} of {}", attempt, self.retry_config.max_attempts);
+            debug!(
+                "Upload attempt {} of {}",
+                attempt, self.retry_config.max_attempts
+            );
 
             match self.try_upload(file_path, original_filename).await {
                 Ok(()) => {
@@ -69,14 +72,21 @@ impl Uploader {
                     error!("Upload attempt {} failed: {}", attempt, e);
 
                     if attempt >= self.retry_config.max_attempts {
-                        anyhow::bail!("Upload failed after {} attempts: {}", self.retry_config.max_attempts, e);
+                        anyhow::bail!(
+                            "Upload failed after {} attempts: {}",
+                            self.retry_config.max_attempts,
+                            e
+                        );
                     }
 
                     // Determine if this is a retryable error
                     if self.is_retryable_error(&e) {
-                        warn!("Retryable error, waiting {} seconds before retry", backoff_secs);
+                        warn!(
+                            "Retryable error, waiting {} seconds before retry",
+                            backoff_secs
+                        );
                         sleep(Duration::from_secs(backoff_secs)).await;
-                        
+
                         // Exponential backoff with cap at 30 seconds
                         backoff_secs = (backoff_secs * 2).min(30);
                     } else {
@@ -91,6 +101,11 @@ impl Uploader {
         match self.api_config.mode.as_str() {
             "multipart" => self.upload_multipart(file_path, original_filename).await,
             "json_base64" => self.upload_json_base64(file_path, original_filename).await,
+            "lookup_enrich" => {
+                anyhow::bail!(
+                    "lookup_enrich mode should be handled by the lookup enricher, not the uploader"
+                );
+            }
             _ => anyhow::bail!("Invalid upload mode: {}", self.api_config.mode),
         }
     }
@@ -99,29 +114,29 @@ impl Uploader {
         debug!("Uploading file as multipart: {}", file_path.display());
 
         // Read file content
-        let file_content = fs::read(file_path).await
+        let file_content = fs::read(file_path)
+            .await
             .context("Failed to read file for multipart upload")?;
-        
-        let file_part = reqwest::multipart::Part::bytes(file_content)
-            .file_name(original_filename.to_string());
-        
+
+        let file_part =
+            reqwest::multipart::Part::bytes(file_content).file_name(original_filename.to_string());
+
         let field_name = self.api_config.field_name.clone();
-        let mut form = reqwest::multipart::Form::new()
-            .part(field_name, file_part);
+        let mut form = reqwest::multipart::Form::new().part(field_name, file_part);
 
         // Add extra fields
         for (key, value) in &self.api_config.extra_fields {
             form = form.text(key.clone(), value.clone());
         }
 
-        let mut request = self.client
-            .post(&self.api_config.endpoint)
-            .multipart(form);
+        let mut request = self.client.post(&self.api_config.endpoint).multipart(form);
 
         // Add authentication
         request = self.add_auth(request);
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .context("Failed to send multipart request")?;
 
         self.handle_response(response).await
@@ -131,7 +146,8 @@ impl Uploader {
         debug!("Uploading file as JSON base64: {}", file_path.display());
 
         // Read file content
-        let file_content = fs::read(file_path).await
+        let file_content = fs::read(file_path)
+            .await
             .context("Failed to read file for base64 encoding")?;
 
         // Encode as base64
@@ -148,14 +164,14 @@ impl Uploader {
             payload[key] = json!(value);
         }
 
-        let mut request = self.client
-            .post(&self.api_config.endpoint)
-            .json(&payload);
+        let mut request = self.client.post(&self.api_config.endpoint).json(&payload);
 
         // Add authentication
         request = self.add_auth(request);
 
-        let response = request.send().await
+        let response = request
+            .send()
+            .await
             .context("Failed to send JSON request")?;
 
         self.handle_response(response).await
@@ -163,19 +179,20 @@ impl Uploader {
 
     fn add_auth(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match self.api_config.auth.as_str() {
-            "bearer" => {
-                request.bearer_auth(&self.api_config.bearer_token)
-            }
-            "basic" => {
-                request.basic_auth(&self.api_config.basic_username, Some(&self.api_config.basic_password))
-            }
+            "bearer" => request.bearer_auth(&self.api_config.bearer_token),
+            "basic" => request.basic_auth(
+                &self.api_config.basic_username,
+                Some(&self.api_config.basic_password),
+            ),
             _ => request,
         }
     }
 
     async fn handle_response(&self, response: reqwest::Response) -> Result<()> {
         let status = response.status();
-        let response_text = response.text().await
+        let response_text = response
+            .text()
+            .await
             .unwrap_or_else(|_| "Failed to read response body".to_string());
 
         debug!("Response status: {}, body: {}", status, response_text);
@@ -199,22 +216,19 @@ impl Uploader {
 
     fn is_retryable_error(&self, error: &anyhow::Error) -> bool {
         let error_str = error.to_string().to_lowercase();
-        
+
         // Retry on network errors, timeouts, and 5xx server errors
-        error_str.contains("timeout") ||
-        error_str.contains("connection") ||
-        error_str.contains("network") ||
-        error_str.contains("server error") ||
-        error_str.contains("5")
+        error_str.contains("timeout")
+            || error_str.contains("connection")
+            || error_str.contains("network")
+            || error_str.contains("server error")
+            || error_str.contains("5")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    
-    
-    
 
     fn create_test_config() -> (ApiConfig, RetryConfig) {
         let api_config = ApiConfig {
