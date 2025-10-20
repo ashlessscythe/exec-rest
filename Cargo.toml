@@ -1,8 +1,8 @@
 [package]
 name = "sap_auto_runner"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2021"
-authors = ["Your Name <your.email@example.com>"]
+authors = ["ashless <drakesav@gmail.com>"]
 description = "Windows-only Rust CLI for running SAP auto extractor and uploading results"
 
 [dependencies]

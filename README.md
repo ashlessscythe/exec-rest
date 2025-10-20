@@ -1,6 +1,17 @@
 # SAP Auto Runner
 
-A Windows-only Rust CLI tool that spawns `sap_auto.exe`, watches for output files, and uploads them to a PHP endpoint on your intranet.
+A Windows-only Rust CLI tool that spawns `sap_auto.exe`, watches for output files, and uploads them to a PHP endpoint on your intranet. Now with lookup enrichment capabilities for data enrichment before upload.
+
+**Version 0.2.0**
+
+## What's New in v0.2.0
+
+- **Lookup Enrichment**: Added ability to enrich TSV data with external API lookups before upload
+- **New Upload Mode**: Added `lookup_enrich` mode for data enrichment workflows
+- **Enhanced Menu**: Added "Enrich latest file only" option for testing enrichment without extraction
+- **Chunked Lookups**: Efficient batch processing of part numbers for lookup API calls
+- **Cookie Support**: Added cookie support for authenticated lookup requests
+- **URL Encoding**: Proper URL encoding for lookup API parameters
 
 ## Features
 
@@ -9,7 +20,8 @@ A Windows-only Rust CLI tool that spawns `sap_auto.exe`, watches for output file
 - **Smart File Selection**: Finds newest file by modification time or timestamp prefix
 - **File Stability**: Waits for files to be fully written before processing
 - **Data Transformation**: Optional TSV/CSV normalization with header parsing
-- **Multiple Upload Modes**: Supports multipart form-data and JSON base64 uploads
+- **Lookup Enrichment**: Enriches TSV data with external API lookups before upload
+- **Multiple Upload Modes**: Supports multipart form-data, JSON base64, and lookup enrichment uploads
 - **Authentication**: Bearer token, basic auth, or no authentication
 - **Retry Logic**: Exponential backoff for failed uploads
 - **Archiving**: Optional file archiving after successful upload
@@ -43,12 +55,21 @@ stable_size_check_secs = 2
 
 [api]
 endpoint = "https://api.example.com/upload.php"
-mode = "multipart"
+mode = "lookup_enrich"                    # "multipart", "json_base64", or "lookup_enrich"
 field_name = "file"
 auth = "none"
 
 [loop]
 interval_seconds = 300  # 0 = run once, >0 = loop forever
+
+# Optional lookup enrichment before upload
+[lookup]
+enabled = true                            # if true, enrich TSV data with lookup API
+url = "http://api.example.com:5050/endpoint.php?ajax=lookup&part="
+chunk_size = 200                          # max parts per lookup request
+cookie = ""                               # optional session cookie
+timeout_secs = 30                         # request timeout
+post_url = "http://api.example.com:8080/blah/yadda.php"  # where to POST enriched data
 ```
 
 ## Usage
@@ -61,7 +82,7 @@ sap_auto_runner.exe
 sap_auto_runner.exe --config C:\\cfg\\runner.toml
 
 # Override specific settings
-sap_auto_runner.exe --endpoint https://api.example.com/upload --mode json_base64 --verbose
+sap_auto_runner.exe --endpoint https://api.example.com/upload --mode lookup_enrich --verbose
 
 # Run once (no looping)
 sap_auto_runner.exe --loop-interval 0
@@ -71,6 +92,7 @@ When launched without CLI overrides, a small interactive menu appears:
 
 - Run once (no loop)
 - Run loop (use configured interval)
+- Enrich latest file only (no extraction)
 - Open config in Notepad
 - Exit
 
@@ -94,6 +116,66 @@ Run Time   :                           14:30:22
 ```
 
 ## Upload Modes
+
+### Lookup Enrichment (new)
+
+When `api.mode = "lookup_enrich"` and `lookup.enabled = true`, the tool will:
+
+1. Parse the TSV file to extract part numbers from the Material column
+2. Perform chunked lookups against the configured lookup API
+3. Enrich the data with DUNS, COF, and Country information
+4. POST the enriched data as JSON to the configured post_url
+
+**Lookup API Requirements:**
+
+- Accepts GET requests with part numbers as query parameters
+- Returns JSON with `duns`, `cof`, and `country` fields
+- Supports chunked requests for multiple parts
+
+**PHP Backend Example for Lookup:**
+
+```php
+<?php
+header('Content-Type: application/json');
+$part = $_GET['part'] ?? '';
+if (empty($part)) {
+    http_response_code(400);
+    echo json_encode(['error' => 'part parameter required']);
+    exit;
+}
+
+// Your lookup logic here
+$result = [
+    'duns' => '123456789',
+    'cof' => 'US',
+    'country' => 'United States'
+];
+
+echo json_encode($result);
+?>
+```
+
+**PHP Backend Example for Enriched Data POST:**
+
+```php
+<?php
+$raw = file_get_contents('php://input');
+$data = json_decode($raw, true);
+if (!$data || !isset($data['rows'])) {
+    http_response_code(400);
+    echo "bad json";
+    exit;
+}
+
+// Process enriched rows
+foreach ($data['rows'] as $row) {
+    // $row contains: plant, delivery, part_no, duns, cof, country, shipment
+    // Your processing logic here
+}
+
+echo "ok";
+?>
+```
 
 ### Multipart (default)
 
@@ -183,13 +265,14 @@ Tests include:
 ## Dependencies
 
 - **tokio**: Async runtime
-- **reqwest**: HTTP client
+- **reqwest**: HTTP client with cookies support
 - **clap**: CLI argument parsing
 - **serde/toml**: Configuration management
 - **glob**: File pattern matching
 - **chrono**: Timestamp handling
 - **base64**: Base64 encoding
 - **encoding_rs**: Character encoding support
+- **urlencoding**: URL encoding for lookup requests
 
 ## License
 

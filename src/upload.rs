@@ -232,7 +232,7 @@ mod tests {
 
     fn create_test_config() -> (ApiConfig, RetryConfig) {
         let api_config = ApiConfig {
-            endpoint: "http://localhost:8080/upload".to_string(),
+            endpoint: "http://localhost:8080/upload".into(),
             mode: "multipart".to_string(),
             field_name: "file".to_string(),
             extra_fields: std::collections::HashMap::new(),
