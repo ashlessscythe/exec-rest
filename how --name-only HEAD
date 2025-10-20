@@ -1,0 +1,398 @@
+[1mdiff --git a/Cargo.toml b/Cargo.toml[m
+[1mindex 1865bbb..4e7dfa9 100644[m
+[1m--- a/Cargo.toml[m
+[1m+++ b/Cargo.toml[m
+[36m@@ -1,13 +1,13 @@[m
+ [package][m
+ name = "sap_auto_runner"[m
+[31m-version = "0.1.0"[m
+[32m+[m[32mversion = "0.2.0"[m
+ edition = "2021"[m
+ authors = ["Your Name <your.email@example.com>"][m
+ description = "Windows-only Rust CLI for running SAP auto extractor and uploading results"[m
+ [m
+ [dependencies][m
+ tokio = { version = "1.0", features = ["full"] }[m
+[31m-reqwest = { version = "0.11", features = ["json", "multipart", "rustls-tls"] }[m
+[32m+[m[32mreqwest = { version = "0.11", features = ["json", "multipart", "rustls-tls", "cookies"] }[m
+ clap = { version = "4.0", features = ["derive"] }[m
+ serde = { version = "1.0", features = ["derive"] }[m
+ serde_json = "1.0"[m
+[36m@@ -23,6 +23,7 @@[m [mchrono = { version = "0.4", features = ["serde"] }[m
+ tempfile = "3.0"[m
+ encoding_rs = "0.8"[m
+ dialoguer = "0.11"[m
+[32m+[m[32murlencoding = "2.1"[m
+ [m
+ [dev-dependencies][m
+ tokio-test = "0.4"[m
+[1mdiff --git a/config.toml b/config.toml[m
+[1mindex 1c605e9..129720b 100644[m
+[1m--- a/config.toml[m
+[1m+++ b/config.toml[m
+[36m@@ -5,7 +5,7 @@[m [margs = []                                 # no additional args needed for your p[m
+ env = {}                                  # optional env for child process[m
+ [m
+ [files][m
+[31m-output_dir = "c:\\temp\\149_auto\\outputs"[m
+[32m+[m[32moutput_dir = "c:\\temp\\reports\\y_149"[m
+ file_glob = "*_y_149-ALL.txt"             # defaults to "*.txt" if empty[m
+ filename_timestamp_prefix = true          # if true, can parse timestamp from filename[m
+ stable_size_check_secs = 2                # size must be stable for this many seconds[m
+[36m@@ -22,7 +22,7 @@[m [moutput_line_ending = "crlf"               # "crlf" or "lf"[m
+ [m
+ [api][m
+ endpoint = "https://api.example.com/upload.php"[m
+[31m-mode = "multipart"                        # "multipart" or "json_base64"[m
+[32m+[m[32mmode = "lookup_enrich"                    # "multipart", "json_base64", or "lookup_enrich"[m
+ field_name = "file"                       # for multipart[m
+ extra_fields = {}                         # sent as additional form fields[m
+ json_filename_key = "filename"            # for json_base64[m
+[36m@@ -44,3 +44,12 @@[m [mallow_nested = true                       # allow nested loops since subcommand[m
+ enabled = false[m
+ path = "C:\\data\\archive"[m
+ append_timestamp = true                   # append YYYYMMDD_HHMMSS to archived name[m
+[32m+[m
+[32m+[m[32m# Optional lookup enrichment before upload[m
+[32m+[m[32m[lookup][m
+[32m+[m[32menabled = true                            # if true, enrich TSV data with lookup API[m
+[32m+[m[32murl = "http://api.example.com:5050/endpoint.php?ajax=lookup&part="[m
+[32m+[m[32mchunk_size = 200                          # max parts per lookup request[m
+[32m+[m[32mcookie = ""                               # optional session cookie[m
+[32m+[m[32mtimeout_secs = 30                         # request timeout[m
+[32m+[m[32mpost_url = "http://api.example.com:8080/blah/yadda.php"  # where to POST enriched data[m
+\ No newline at end of file[m
+[1mdiff --git a/src/config.rs b/src/config.rs[m
+[1mindex 68ad544..00037b0 100644[m
+[1m--- a/src/config.rs[m
+[1m+++ b/src/config.rs[m
+[36m@@ -13,6 +13,7 @@[m [mpub struct Config {[m
+     pub retry: RetryConfig,[m
+     pub loop_config: LoopConfig,[m
+     pub archive: ArchiveConfig,[m
+[32m+[m[32m    pub lookup: LookupConfig,[m
+ }[m
+ [m
+ #[derive(Debug, Clone, Serialize, Deserialize)][m
+[36m@@ -76,6 +77,16 @@[m [mpub struct ArchiveConfig {[m
+     pub append_timestamp: bool,[m
+ }[m
+ [m
+[32m+[m[32m#[derive(Debug, Clone, Serialize, Deserialize)][m
+[32m+[m[32mpub struct LookupConfig {[m
+[32m+[m[32m    pub enabled: bool,[m
+[32m+[m[32m    pub url: String,[m
+[32m+[m[32m    pub chunk_size: usize,[m
+[32m+[m[32m    pub cookie: String,[m
+[32m+[m[32m    pub timeout_secs: u64,[m
+[32m+[m[32m    pub post_url: String,[m
+[32m+[m[32m}[m
+[32m+[m
+ impl Config {[m
+     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {[m
+         let path_ref = path.as_ref();[m
+[36m@@ -140,13 +151,26 @@[m [mimpl Config {[m
+         if self.api.endpoint.is_empty() {[m
+             anyhow::bail!("api.endpoint cannot be empty");[m
+         }[m
+[31m-        if !["multipart", "json_base64"].contains(&self.api.mode.as_str()) {[m
+[31m-            anyhow::bail!("api.mode must be 'multipart' or 'json_base64'");[m
+[32m+[m[32m        if !["multipart", "json_base64", "lookup_enrich"].contains(&self.api.mode.as_str()) {[m
+[32m+[m[32m            anyhow::bail!("api.mode must be 'multipart', 'json_base64', or 'lookup_enrich'");[m
+         }[m
+         if !["none", "bearer", "basic"].contains(&self.api.auth.as_str()) {[m
+             anyhow::bail!("api.auth must be 'none', 'bearer', or 'basic'");[m
+         }[m
+ [m
+[32m+[m[32m        // Validate lookup config[m
+[32m+[m[32m        if self.lookup.enabled {[m
+[32m+[m[32m            if self.lookup.url.is_empty() {[m
+[32m+[m[32m                anyhow::bail!("lookup.url cannot be empty when lookup is enabled");[m
+[32m+[m[32m            }[m
+[32m+[m[32m            if self.lookup.post_url.is_empty() {[m
+[32m+[m[32m                anyhow::bail!("lookup.post_url cannot be empty when lookup is enabled");[m
+[32m+[m[32m            }[m
+[32m+[m[32m            if self.lookup.chunk_size == 0 {[m
+[32m+[m[32m                anyhow::bail!("lookup.chunk_size must be greater than 0");[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m
+         // Validate retry config[m
+         if self.retry.max_attempts == 0 {[m
+             anyhow::bail!("retry.max_attempts must be greater than 0");[m
+[36m@@ -210,6 +234,14 @@[m [mimpl Default for Config {[m
+                 path: "C:\\sap\\archive".to_string(),[m
+                 append_timestamp: true,[m
+             },[m
+[32m+[m[32m            lookup: LookupConfig {[m
+[32m+[m[32m                enabled: false,[m
+[32m+[m[32m                url: "http://api.example.com:5050/endpoint.php?ajax=lookup&part=".to_string(),[m
+[32m+[m[32m                chunk_size: 200,[m
+[32m+[m[32m                cookie: String::new(),[m
+[32m+[m[32m                timeout_secs: 30,[m
+[32m+[m[32m                post_url: "http://api.example.com:8080/blah/yadda.php".to_string(),[m
+[32m+[m[32m            },[m
+         }[m
+     }[m
+ }[m
+[1mdiff --git a/src/lookup.rs b/src/lookup.rs[m
+[1mnew file mode 100644[m
+[1mindex 0000000..966dba5[m
+[1m--- /dev/null[m
+[1m+++ b/src/lookup.rs[m
+[36m@@ -0,0 +1,587 @@[m
+[32m+[m[32muse anyhow::{Context, Result};[m
+[32m+[m[32muse log::{debug, info, warn};[m
+[32m+[m[32muse reqwest::{header, Client};[m
+[32m+[m[32muse serde::{Deserialize, Serialize};[m
+[32m+[m[32muse std::collections::{HashMap, HashSet};[m
+[32m+[m[32muse std::path::Path;[m
+[32m+[m[32muse tokio::time::Duration;[m
+[32m+[m
+[32m+[m[32muse crate::config::LookupConfig;[m
+[32m+[m
+[32m+[m[32m#[derive(Serialize, Clone)][m
+[32m+[m[32mpub struct EnrichedRow {[m
+[32m+[m[32m    pub plant: String,[m
+[32m+[m[32m    pub delivery: String,[m
+[32m+[m[32m    #[serde(rename = "part_no")][m
+[32m+[m[32m    pub part_no: String,[m
+[32m+[m[32m    pub duns: String,[m
+[32m+[m[32m    pub cof: String,[m
+[32m+[m[32m    pub country: String,[m
+[32m+[m[32m    pub shipment: String,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32m#[derive(Deserialize)][m
+[32m+[m[32mstruct LookupResponse {[m
+[32m+[m[32m    duns: String,[m
+[32m+[m[32m    cof: String,[m
+[32m+[m[32m    country: String,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mpub struct LookupEnricher {[m
+[32m+[m[32m    client: Client,[m
+[32m+[m[32m    config: LookupConfig,[m
+[32m+[m[32m}[m
+[32m+[m
+[32m+[m[32mimpl LookupEnricher {[m
+[32m+[m[32m    pub fn new(config: &LookupConfig) -> Result<Self> {[m
+[32m+[m[32m        let client = Client::builder()[m
+[32m+[m[32m            .timeout(Duration::from_secs(config.timeout_secs))[m
+[32m+[m[32m            .build()[m
+[32m+[m[32m            .context("Failed to create HTTP client for lookup")?;[m
+[32m+[m
+[32m+[m[32m        Ok(Self {[m
+[32m+[m[32m            client,[m
+[32m+[m[32m            config: config.clone(),[m
+[32m+[m[32m        })[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    pub async fn enrich_tsv_file(&self, tsv_path: &Path) -> Result<Vec<EnrichedRow>> {[m
+[32m+[m[32m        info!([m
+[32m+[m[32m            "Starting lookup enrichment for file: {}",[m
+[32m+[m[32m            tsv_path.display()[m
+[32m+[m[32m        );[m
+[32m+[m
+[32m+[m[32m        // Parse TSV file into base rows[m
+[32m+[m[32m        let base_rows = self.parse_tsv_file(tsv_path).await?;[m
+[32m+[m[32m        if base_rows.is_empty() {[m
+[32m+[m[32m            warn!("No rows found in TSV file");[m
+[32m+[m[32m            return Ok(base_rows);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        info!("Parsed {} rows from TSV file", base_rows.len());[m
+[32m+[m[41m        [m
+[32m+[m[32m        // Log sample of parsed rows for debugging[m
+[32m+[m[32m        for (i, row) in base_rows.iter().take(5).enumerate() {[m
+[32m+[m[32m            info!("Sample row {}: Plant='{}', Delivery='{}', Part='{}'",[m[41m [m
+[32m+[m[32m                  i + 1, row.plant, row.delivery, row.part_no);[m
+[32m+[m[32m        }[m
+[32m+[m[32m        if base_rows.len() > 5 {[m
+[32m+[m[32m            info!("... and {} more rows", base_rows.len() - 5);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        // Extract unique part numbers[m
+[32m+[m[32m        let part_numbers = self.dedupe_part_numbers(&base_rows);[m
+[32m+[m[32m        info!([m
+[32m+[m[32m            "Found {} unique part numbers for lookup",[m
+[32m+[m[32m            part_numbers.len()[m
+[32m+[m[32m        );[m
+[32m+[m[41m        [m
+[32m+[m[32m        // Log sample part numbers for debugging[m
+[32m+[m[32m        if !part_numbers.is_empty() {[m
+[32m+[m[32m            info!("Sample part numbers: {}", part_numbers.iter().take(10).cloned().collect::<Vec<_>>().join(", "));[m
+[32m+[m[32m            if part_numbers.len() > 10 {[m
+[32m+[m[32m                info!("... and {} more part numbers", part_numbers.len() - 10);[m
+[32m+[m[32m            }[m
+[32m+[m[32m        } else {[m
+[32m+[m[32m            warn!("No part numbers found! Checking for empty part numbers in rows...");[m
+[32m+[m[32m            let empty_parts = base_rows.iter().filter(|row| row.part_no.trim().is_empty()).count();[m
+[32m+[m[32m            let non_empty_parts = base_rows.iter().filter(|row| !row.part_no.trim().is_empty()).count();[m
+[32m+[m[32m            info!("Rows with empty part numbers: {}", empty_parts);[m
+[32m+[m[32m            info!("Rows with non-empty part numbers: {}", non_empty_parts);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        if part_numbers.is_empty() {[m
+[32m+[m[32m            warn!("No part numbers found for lookup");[m
+[32m+[m[32m            // Return base rows with empty lookup fields - they'll still be posted[m
+[32m+[m[32m            return Ok(base_rows);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        // Perform chunked lookups[m
+[32m+[m[32m        let lookup_data = self.lookup_chunks(&part_numbers).await?;[m
+[32m+[m[32m        info!("Retrieved lookup data for {} parts", lookup_data.len());[m
+[32m+[m
+[32m+[m[32m        // Merge lookup data into rows (even if lookup_data is empty)[m
+[32m+[m[32m        let enriched_rows = self.merge_lookup_data(base_rows, &lookup_data);[m
+[32m+[m[32m        info!("Enriched {} rows with lookup data", enriched_rows.len());[m
+[32m+[m[41m        [m
+[32m+[m[32m        if lookup_data.is_empty() {[m
+[32m+[m[32m            info!("No lookup data was found - rows will be posted with original data only (empty DUNS, COF, Country fields)");[m
+[32m+[m[32m        }[m
+[32m+[m[41m        [m
+[32m+[m[32m        // Log sample of final enriched rows[m
+[32m+[m[32m        if !enriched_rows.is_empty() {[m
+[32m+[m[32m            info!("Sample final enriched rows:");[m
+[32m+[m[32m            for (i, row) in enriched_rows.iter().take(5).enumerate() {[m
+[32m+[m[32m                let lookup_status = if row.duns.is_empty() { "No lookup data" } else { "With lookup data" };[m
+[32m+[m[32m                info!("  {}: Plant='{}', Delivery='{}', Part='{}', DUNS='{}', COF='{}', Country='{}' [{}]",[m[41m [m
+[32m+[m[32m                      i + 1, row.plant, row.delivery, row.part_no, row.duns, row.cof, row.country, lookup_status);[m
+[32m+[m[32m            }[m
+[32m+[m[32m            if enriched_rows.len() > 5 {[m
+[32m+[m[32m                info!("  ... and {} more enriched rows", enriched_rows.len() - 5);[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        Ok(enriched_rows)[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    async fn parse_tsv_file(&self, path: &Path) -> Result<Vec<EnrichedRow>> {[m
+[32m+[m[32m        let content = tokio::fs::read_to_string(path)[m
+[32m+[m[32m            .await[m
+[32m+[m[32m            .with_context(|| format!("Failed to read TSV file: {}", path.display()))?;[m
+[32m+[m
+[32m+[m[32m        info!("TSV file content length: {} characters", content.len());[m
+[32m+[m[32m        debug!("First 500 characters of TSV file:\n{}",[m[41m [m
+[32m+[m[32m               content.chars().take(500).collect::<String>());[m
+[32m+[m
+[32m+[m[32m        let mut rows = Vec::new();[m
+[32m+[m[32m        let mut seen_header = false;[m
+[32m+[m[32m        let mut line_count = 0;[m
+[32m+[m[32m        let mut header_found = false;[m
+[32m+[m
+[32m+[m[32m        info!("Starting to parse TSV file with {} lines", content.lines().count());[m
+[32m+[m
+[32m+[m[32m        for line in content.lines() {[m
+[32m+[m[32m            line_count += 1;[m
+[32m+[m[32m            let line = line.trim_end_matches(['\r', '\n']);[m
+[32m+[m[32m            let trimmed_line = line.trim();[m
+[32m+[m[32m            if trimmed_line.is_empty() {[m
+[32m+[m[32m                continue;[m
+[32m+[m[32m            }[m
+[32m+[m
+[32m+[m[32m            // Look for header row[m
+[32m+[m[32m            if !seen_header {[m
+[32m+[m[32m                let lc = trimmed_line.to_ascii_lowercase();[m
+[32m+[m[32m                debug!("Line {}: Checking for header: '{}'", line_count, trimmed_line);[m
+[32m+[m[32m                if lc.contains("plant") && lc.contains("delivery") && lc.contains("material") {[m
+[32m+[m[32m                    seen_header = true;[m
+[32m+[m[32m                    header_found = true;[m
+[32m+[m[32m                    info!("Found header row at line {}: '{}'", line_count, trimmed_line);[m
+[32m+[m[32m                    continue;[m
+[32m+[m[32m                }[m
+[32m+[m[32m                debug!("Line {}: Not a header, skipping", line_count);[m
+[32m+[m[32m                continue;[m
+[32m+[m[32m            }[m
+[32m+[m
+[32m+[m[32m            // Parse data row - handle mixed tab/space separators[m
+[32m+[m[32m            // The format appears to be: Plant\tDelivery\t\tMaterial or Plant\tDelivery\t\t\tMaterial[m
+[32m+[m[32m            // We'll split by tab first, then handle the material column which might have spaces[m
+[32m+[m[32m            debug!("Line {}: Raw line: '{}'", line_count, trimmed_line);[m
+[32m+[m[32m            let cols: Vec<&str> = trimmed_line.split('\t').collect();[m
+[32m+[m[32m            debug!("Line {}: Split into {} columns: {:?}", line_count, cols.len(), cols);[m
+[32m+[m[41m            [m
+[32m+[m[32m            if cols.len() < 3 {[m
+[32m+[m[32m                debug!("Skipping line with insufficient columns ({}): '{}'", cols.len(), trimmed_line);[m
+[32m+[m[32m                continue;[m
+[32m+[m[32m            }[m
+[32m+[m
+[32m+[m[32m            let plant = cols[0].trim().to_string();[m
+[32m+[m[32m            let delivery = cols[1].trim().to_string();[m
+[32m+[m[41m            [m
+[32m+[m[32m            // Find the material column - it should be the last non-empty column[m
+[32m+[m[32m            let mut part_no = String::new();[m
+[32m+[m[32m            for i in (2..cols.len()).rev() {[m
+[32m+[m[32m                let col = cols[i].trim();[m
+[32m+[m[32m                if !col.is_empty() {[m
+[32m+[m[32m                    // This might contain spaces, so split by whitespace and take the first part[m
+[32m+[m[32m                    let material_parts: Vec<&str> = col.split_whitespace().collect();[m
+[32m+[m[32m                    if !material_parts.is_empty() {[m
+[32m+[m[32m                        part_no = material_parts[0].to_string();[m
+[32m+[m[32m                        break;[m
+[32m+[m[32m                    }[m
+[32m+[m[32m                }[m
+[32m+[m[32m            }[m
+[32m+[m
+[32m+[m[32m            debug!("Parsed row - Plant: '{}', Delivery: '{}', Part: '{}'", plant, delivery, part_no);[m
+[32m+[m
+[32m+[m[32m            // Skip empty rows[m
+[32m+[m[32m            if plant.is_empty() && delivery.is_empty() && part_no.is_empty() {[m
+[32m+[m[32m                continue;[m
+[32m+[m[32m            }[m
+[32m+[m
+[32m+[m[32m            rows.push(EnrichedRow {[m
+[32m+[m[32m                plant,[m
+[32m+[m[32m                delivery,[m
+[32m+[m[32m                part_no,[m
+[32m+[m[32m                duns: String::new(),[m
+[32m+[m[32m                cof: String::new(),[m
+[32m+[m[32m                country: String::new(),[m
+[32m+[m[32m                shipment: String::new(),[m
+[32m+[m[32m            });[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        info!("TSV parsing complete: {} total lines processed, header found: {}, {} data rows parsed",[m[41m [m
+[32m+[m[32m              line_count, header_found, rows.len());[m
+[32m+[m
+[32m+[m[32m        Ok(rows)[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    fn dedupe_part_numbers(&self, rows: &[EnrichedRow]) -> Vec<String> {[m
+[32m+[m[32m        let mut seen = HashSet::new();[m
+[32m+[m[32m        let mut parts = Vec::new();[m
+[32m+[m[32m        let mut empty_count = 0;[m
+[32m+[m[32m        let mut duplicate_count = 0;[m
+[32m+[m
+[32m+[m[32m        for row in rows {[m
+[32m+[m[32m            if row.part_no.trim().is_empty() {[m
+[32m+[m[32m                empty_count += 1;[m
+[32m+[m[32m                debug!("Skipping row with empty part number: Plant='{}', Delivery='{}'", row.plant, row.delivery);[m
+[32m+[m[32m            } else if seen.insert(row.part_no.clone()) {[m
+[32m+[m[32m                parts.push(row.part_no.clone());[m
+[32m+[m[32m                debug!("Added unique part number: '{}'", row.part_no);[m
+[32m+[m[32m            } else {[m
+[32m+[m[32m                duplicate_count += 1;[m
+[32m+[m[32m                debug!("Skipping duplicate part number: '{}'", row.part_no);[m
+[32m+[m[32m            }[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        info!("Part number deduplication: {} unique, {} empty, {} duplicates",[m[41m [m
+[32m+[m[32m              parts.len(), empty_count, duplicate_count);[m
+[32m+[m[41m        [m
+[32m+[m[32m        parts[m
+[32m+[m[32m    }[m
+[32m+[m
+[32m+[m[32m    async fn lookup_chunks([m
+[32m+[m[32m        &self,[m
+[32m+[m[32m        part_numbers: &[String],[m
+[32m+[m[32m    ) -> Result<HashMap<String, LookupResponse>> {[m
+[32m+[m[32m        let mut all_lookup_data = HashMap::new();[m
+[32m+[m
+[32m+[m[32m        for chunk in part_numbers.chunks(self.config.chunk_size) {[m
+[32m+[m[32m            let chunk_data = self.lookup_single_chunk(chunk).await?;[m
+[32m+[m[32m            all_lookup_data.extend(chunk_data);[m
+[32m+[m[32m        }[m
+[32m+[m
+[32m+[m[32m        Ok(all_lookup_data)[m
+[32m+
